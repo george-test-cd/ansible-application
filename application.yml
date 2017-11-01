@@ -1,0 +1,77 @@
+---
+- hosts: application
+  tasks:
+  - name: Install java
+    become: yes
+    package:
+      name: openjdk-8-jre-headless
+
+  - name: Create axonmulti group
+    become: yes
+    group:
+      name: axonmulti
+      state: present
+        
+  - name: Create axonmulti user
+    become: yes
+    user:
+      name: axonmulti
+      group: axonmulti
+      home: /opt/axonmulti
+      system: yes
+      
+  - name: Copy deployable
+    become: yes    
+    become_user: axonmulti
+    copy:
+      src: "{{ application_jar_path | default('/tmp/axonmulti-build-tmp/axonframework.multimaster-swarm.jar') }}"
+      dest: /opt/axonmulti/axonframework.multimaster-swarm.jar
+    register: deployable_res
+      
+  - name: Setup swarm configuration
+    become: yes    
+    become_user: axonmulti
+    template:
+      src: "{{ staging_dir }}/templates/swarm-config.yml.j2"
+      dest: /opt/axonmulti/swarm-config.yml
+    register: configuration_res
+      
+  - name: Create axonmulti service
+    become: yes    
+    copy:
+      dest: /lib/systemd/system/axonmulti.service 
+      mode: '0644'
+      content: |
+        [Unit]
+        Description=Axonmulti
+        After=network.target
+        
+        [Service]
+        WorkingDirectory=/opt/axonmulti
+        SyslogIdentifier=Axonmulti
+        ExecStart=/bin/sh -c "exec java -Djava.net.preferIPv4Stack=true -jar axonframework.multimaster-swarm.jar -s swarm-config.yml"
+        User=axonmulti
+        Type=simple
+        
+        [Install]
+        WantedBy=multi-user.target
+    register: systemd_config_res
+  
+  - name: Reload systemctl
+    become: yes    
+    command: systemctl daemon-reload
+    when: systemd_config_res | changed
+    
+  - name: Enable and start axonmulti.service
+    become: yes    
+    service:
+      name: axonmulti
+      enabled: yes
+      state: started
+      
+  - name: Restart axonmulti.service      
+    become: yes    
+    service:
+      name: axonmulti
+      state: restarted
+    when: systemd_config_res | changed or deployable_res | changed         

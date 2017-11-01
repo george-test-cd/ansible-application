@@ -1,0 +1,62 @@
+---
+- hosts: web
+  become: yes
+  vars:
+    axonmulti_servers: "{{ groups['application'] | map('extract', hostvars, ['ansible_enp0s9', 'ipv4', 'address']) | list }}"
+  tasks:
+  - name: Gather facts from ALL hosts (regardless of limit or tags)
+    setup:
+    delegate_to: "{{ item }}"
+    delegate_facts: yes
+    #when: hostvars[item]['ansible_default_ipv4'] is not defined
+    with_items: "{{ groups['all'] }}"
+  
+  - name: haproxy installed
+    package:
+      name: haproxy
+  
+  - name: haproxy enabled and started
+    service:
+      name: haproxy
+      enabled: yes
+      state: started
+
+  - name: register axonmulti proxy frontend 
+    blockinfile:
+      path: /etc/haproxy/haproxy.cfg
+      marker: "# {mark} ANSIBLE MANAGED BLOCK - frontend"
+      block: |
+        frontend fe_main
+          bind :80
+          default_backend be_axonmulti
+    register: haproxy_fe_res
+
+  - name: register axonmulti proxy backends
+    blockinfile:
+      path: /etc/haproxy/haproxy.cfg
+      marker: "# {mark} ANSIBLE MANAGED BLOCK - backend"
+      block: |
+        backend be_axonmulti
+          option httpchk get /stats/health
+        {% for host in axonmulti_servers %}
+          server {{ host }} {{ host }}:8080 check
+        {% endfor %}  
+    register: haproxy_be_res
+
+  - name: register haproxy stats
+    blockinfile:
+      path: /etc/haproxy/haproxy.cfg
+      marker: "# {mark} ANSIBLE MANAGED BLOCK - stats"
+      block: |
+        listen stats
+          bind :9000
+          stats uri /
+          stats enable
+          stats auth username:password
+    register: haproxy_stats_res
+    
+  - name: haproxy reload
+    service:
+      name: haproxy
+      state: reloaded
+    when: (haproxy_fe_res | changed) or (haproxy_be_res | changed) or (haproxy_stats_res | changed) 
